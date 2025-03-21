@@ -200,7 +200,7 @@ class ImageClassificationBase(nn.Module):
         return {"val_loss": epoch_loss, "val_acc": epoch_acc} 
     
     def epoch_end(self, epoch, result): 
-        print(f"\33[33m Epoch: {epoch+1} | train_loss: {result["train_loss"]:.4f} | val_loss: {result["val_loss"]:.4f} | val_acc: {result["val_acc"]:.4f}") 
+        print(f"\33[33m Epoch: {epoch+1} | lr: {result["lrs"][-1]:.4f} : train_loss: {result["train_loss"]:.4f} | val_loss: {result["val_loss"]:.4f} | val_acc: {result["val_acc"]:.4f}") 
 
 
 
@@ -242,36 +242,6 @@ class ResNet9(ImageClassificationBase):
        return out
 
 
-
-
-"""TRAIN THE MODEL""" 
-def evaluate(model:nn.Module, val_dl: DataLoader): 
-    model.eval() 
-    with torch.inference_mode():
-        outputs= [model.validation_step(batch) for batch in val_dl] 
-        return model.validation_epoch_end(outputs)  
-
-def fit(num_epochs: int, lr: float, model:nn.Module, train_dl: DataLoader, val_dl: DataLoader, opt_func=torch.optim.Adam): 
-    optimizer = opt_func(model.parameters(), lr) 
-    history = [] 
-
-    for epoch in range(num_epochs):
-        # Training phase 
-        model.train()
-        train_losses = []
-        for batch in train_dl: 
-            loss = model.training_step(batch) 
-            train_losses.append(loss)
-            loss.backward() 
-            optimizer.step() 
-            optimizer.zero_grad()  
-
-        result = evaluate(model, val_dl) 
-        result["train_loss"] = torch.stack(train_losses).mean().item()  
-        model.epoch_end(epoch, result)
-        history.append(result)  
-    return history 
-
 model = ResNet9(3, len(class_names)) 
 to_device(model, device)  
 
@@ -280,11 +250,92 @@ for images, label in train_dl:
     #print(outputs.shape) 
     break
 
-"""Train model""" 
-opt_func = torch.optim.Adam 
-lr = 0.001
+"""Train the Model
+Before we train the model, we're going to make a bunch of small but important improvements to our 
+fit function: 
 
-history = fit(20, lr, model, train_dl, val_dl, opt_func) 
+* Learning rate scheduling: Instead of using a fixed learning rate, we'll use a 
+learning rate scheduler, which will change the learning rate after every batch of training. There
+many strategies for varying the learning rate, and the one we'll use is called the 
+"One Cycle Learning Rate Policy", which involves starting with a low learning rate, gradually increasing it 
+batch-by-batch to a high learning rate for about 30% of epochs, then gradually decreasing it to a very low value 
+for the remaining epochs. 
+
+*Weight decay: We'll use a weight decay, which is yet another regularization
+technique which prevents the weights from becoming too large by adding additional 
+terms to the loss funtion. 
+
+*Gradient clipping: apart from the layer weights and outputs, it is also useful to 
+limit the values of gradients to a small range to prevent undesirable changes in the paramters
+due to too large gradient values. This simple yet effective technique is called gradient 
+clipping.  
+
+""" 
+"""TRAIN THE MODEL""" 
+def evaluate(model:nn.Module, val_dl: DataLoader): 
+    model.eval() 
+    with torch.inference_mode():
+        outputs= [model.validation_step(batch) for batch in val_dl] 
+        return model.validation_epoch_end(outputs)    
+    
+
+def get_lr(optimizer: torch.optim.Optimizer): 
+    for param_group in optimizer.param_groups:
+        return param_group["lr"]
+    
+def fit_one_cycle(epochs, max_lr, model: nn.Module, train_dl, val_dl,
+                  weight_decay=0, grad_clip = None, opt_func=torch.optim.SGD):
+    torch.cuda.empty_cache() 
+    history = [] 
+
+    # Set up custom optimizer with weight decay 
+    optimizer = opt_func(model.parameters(), lr=max_lr, weight_decay=weight_decay)
+
+    # Set up one-cycle learning rate schedule 
+    sched = torch.optim.lr_scheduler.OneCycleLR(optimizer, max_lr, epochs=epochs, 
+                                                steps_per_epoch=len(train_dl)) 
+    
+    for epoch in range(epochs): 
+        # Training Phase 
+        model.train() 
+        train_losses = [] 
+        lrs = [] 
+        for batch in train_dl: 
+            loss = model.training_step(batch) 
+            train_losses.append(loss) 
+            loss.backward() 
+
+            # Gradient clipping 
+            if grad_clip: 
+                nn.utils.clip_grad_value_(model.parameters(), grad_clip) 
+
+            optimizer.step() 
+            optimizer.zero_grad()
+            
+            # Record & update learning rate
+            lrs.append(get_lr(optimizer)) 
+            sched.step() 
+        
+        # Validation Phase 
+        result = evaluate(model, val_dl)
+        result["train_loss"] = torch.stack(train_losses).mean().item() 
+        result["lrs"] = lrs 
+        model.epoch_end(epoch, result) 
+    history.append(result)
+
+
+"""Let's train the model now"""
+epochs = 8 
+max_lr = 0.01
+grad_clip = 0.1 
+weight_decay = 1e-4
+opt_func = torch.optim.Adam 
+
+
+history = fit_one_cycle(epochs, max_lr, model, train_dl, val_dl, 
+                        grad_clip=grad_clip, 
+                        weight_decay= weight_decay,
+                        opt_func=opt_func) 
 
 """Plot losses and accuracies""" 
 
