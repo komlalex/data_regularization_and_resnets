@@ -1,3 +1,5 @@
+import sys  
+
 import torch 
 import torch.nn as nn 
 import torch.nn.functional as F
@@ -63,7 +65,8 @@ train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, pin_memory=
 val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE*2, pin_memory=True) 
 
 """Let's take a look at some samples images from the training dataloader. To display the images, we'll need to 
-denormalize the pixel values to bring them back into the range (0, 1)""" 
+denormalize the pixel values to bring them back into the range (0, 1). 
+""" 
 
 def denormalize(images, means, stds): 
     means = torch.tensor(means).reshape(1, 3, 1, 1) 
@@ -94,9 +97,7 @@ for batch in train_dl:
     show_batch(batch)  
     break 
 
-plt.show() 
-import sys 
-sys.exit()
+
 """Create Device Agnostic code""" 
 def get_default_device(): 
     """Get GPU if available, else CPU"""
@@ -104,8 +105,7 @@ def get_default_device():
         return torch.device("cuda") 
     else: 
         return torch.device("cpu")
-
-device = get_default_device() 
+    
 
 def to_device(data, device): 
     """Sends data to appropriate device""" 
@@ -120,11 +120,16 @@ class DeviceDataLoader():
         self.device = device 
     
     def __iter__(self): 
+        """Yield a batch of data after moving it to device"""
         for batch in self.dl: 
             yield to_device(batch, device) 
 
     def __len__(self): 
-        return len(self.dl) 
+        """Number of batches"""
+        return len(self.dl)  
+
+"""Get the default device"""  
+device = get_default_device() 
     
 """Now, let's wrap our data loaders""" 
 train_dl = DeviceDataLoader(train_dl, device)
@@ -137,7 +142,54 @@ def accuracy(outputs, y_true):
     return torch.tensor(torch.sum(y_true==y_preds).item() / len(y_true))
 
 
-"""Model"""
+"""Model with Residual Bloacks and  Batch Normalization 
+One of the key changes to our CNN model this time is the addition of residual
+ block, which adds the original input back to the output feature obtained by passing the 
+ input through one or more convolutional layers""" 
+
+"""Here's a very simple Residual block."""
+class SimpleResidualBlock(nn.Module): 
+    def __init__(self):
+        super().__init__() 
+        self.conv1 = nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, stride=1, padding=1)
+        self.relu1 = nn.ReLU() 
+        self.conv2 = nn.Conv2d(in_channels=3, out_channels=3, kernel_size=3, stride=1, padding=1)
+        self.relu2 = nn.ReLU() 
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor: 
+        out = self.conv1(x) 
+        out = self.relu1(out) 
+        out = self.conv2(out) 
+        out = self.relu2(out) 
+        return out + x # ReLU can be applied before or after adding the input 
+
+simple_resnet = SimpleResidualBlock()
+to_device(simple_resnet, device) 
+
+for images, labels in train_dl:
+    out = simple_resnet(images) 
+    print(out.shape) 
+    del simple_resnet 
+    break 
+
+
+"""This seemingly small change produces a drastic change in the perfromance 
+of the model. Also, we'll add a batch normalization layer, which normalizes the output of 
+the previous layer. We'll use the ResNet9 architecture."""
+sys.exit()
+
+
+
+
+
+
+
+
+
+
+
+
+
 class ImageClassificationBase(nn.Module): 
 
     def training_step(self, batch): 
