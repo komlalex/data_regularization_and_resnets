@@ -168,26 +168,13 @@ to_device(simple_resnet, device)
 
 for images, labels in train_dl:
     out = simple_resnet(images) 
-    print(out.shape) 
-    del simple_resnet 
+    #print(out.shape) 
     break 
 
 
 """This seemingly small change produces a drastic change in the perfromance 
 of the model. Also, we'll add a batch normalization layer, which normalizes the output of 
 the previous layer. We'll use the ResNet9 architecture."""
-sys.exit()
-
-
-
-
-
-
-
-
-
-
-
 
 
 class ImageClassificationBase(nn.Module): 
@@ -214,42 +201,48 @@ class ImageClassificationBase(nn.Module):
     
     def epoch_end(self, epoch, result): 
         print(f"\33[33m Epoch: {epoch+1} | train_loss: {result["train_loss"]:.4f} | val_loss: {result["val_loss"]:.4f} | val_acc: {result["val_acc"]:.4f}") 
-    
-class Cfar10CnnModel(ImageClassificationBase): 
-    def __init__(self):
+
+
+
+def conv_block(in_channels, out_channels, pool = False): 
+    layers = [nn.Conv2d(in_channels, out_channels, kernel_size=3, padding=1), 
+              nn.BatchNorm2d(out_channels), 
+              nn.ReLU(inplace=True)] 
+    if pool: layers.append(nn.MaxPool2d(2)) 
+
+    return nn.Sequential(*layers) 
+
+
+class ResNet9(ImageClassificationBase): 
+    def __init__(self, in_channels, num_classes):
         super().__init__() 
-        self.network = nn.Sequential(  
+        self.conv1 = conv_block(in_channels, 64) # 64 x 32 x 32
+        self.conv2 = conv_block(64, 128, pool=True) # 128 x 16 x 16
+        self.res1 = nn.Sequential(conv_block(128, 128), 
+                                  conv_block(128, 128)) # 128 x 16 x 16
 
-            # Convolutional layers
-            # Input: 3 x 32 x 32
-            nn.Conv2d(3, 32 ,kernel_size=3, stride=1, padding=1), # Output 32 x 32 x 32
-            nn.ReLU(), 
-            nn.Conv2d(32, 64, kernel_size=3, padding=1), # Output 64 x 32 x 32  
-            nn.ReLU(), 
-            nn.MaxPool2d(2, 2), # Output 64 x 16 x 16 
+        self.conv3 = conv_block(128, 256, pool=True) # 256 x 8 x 8
+        self.conv4 = conv_block(256, 512, pool=True) # 512 x 4 x 4
+        self.res2 = nn.Sequential(conv_block(512, 512), 
+                                  conv_block(512, 512)) # 512 x 4 x 4
 
-            nn.Conv2d(64, 128, kernel_size=3, stride=1, padding=1), # Output: 128 x 32 x 32
-            nn.ReLU(), 
-            nn.Conv2d(128, 128, kernel_size=3, stride=1, padding=1), # OUtput: 128 x 32 x 32 
-            nn.ReLU(), 
-            nn.MaxPool2d(2, 2), # Output: 128 x 8 x 8
+        self.classifier = nn.Sequential(nn.MaxPool2d(4), # 512 x 1 x 1
+                                        nn.Flatten(), # 512
+                                        nn.Dropout(0.2), 
+                                        nn.Linear(512, num_classes)) # 10
 
-            nn.Conv2d(128, 256, kernel_size=3, stride=1, padding=1), # Output: 256 x 8 x 8
-            nn.ReLU(), 
-            nn.Conv2d(256, 256, kernel_size=3, stride=1, padding=1), # Output: 256 x 8 x 8
-            nn.ReLU(), 
-            nn.MaxPool2d(2, 2), # Output: 256 x 4 x 4 
+    def forward(self, xb: torch.Tensor) -> torch.Tensor: 
+       out = self.conv1(xb) 
+       out = self.conv2(out) 
+       out = self.res1(out) + out 
+       out = self.conv3(out) 
+       out = self.conv4(out) 
+       out = self.res2(out) + out 
+       out = self.classifier(out) 
+       return out
 
-            # Classification layers
-            nn.Flatten(), # Return: 256 * 4 * 4 = 4096 
-            nn.Linear(256*4*4, 1024), # Output: 1024
-            nn.ReLU(), 
-            nn.Linear(1024, 512), # Output: 1024
-            nn.ReLU(),
-            nn.Linear(512, 10) 
-        )
-    def forward(self, x) -> torch.Tensor: 
-        return self.network(x) 
+
+
 
 """TRAIN THE MODEL""" 
 def evaluate(model:nn.Module, val_dl: DataLoader): 
@@ -279,14 +272,19 @@ def fit(num_epochs: int, lr: float, model:nn.Module, train_dl: DataLoader, val_d
         history.append(result)  
     return history 
 
-model = Cfar10CnnModel() 
-to_device(model, device) 
+model = ResNet9(3, len(class_names)) 
+to_device(model, device)  
+
+for images, label in train_dl: 
+    outputs = model(images) 
+    #print(outputs.shape) 
+    break
 
 """Train model""" 
 opt_func = torch.optim.Adam 
 lr = 0.001
 
-history = fit(10, lr, model, train_dl, val_dl, opt_func) 
+history = fit(20, lr, model, train_dl, val_dl, opt_func) 
 
 """Plot losses and accuracies""" 
 
