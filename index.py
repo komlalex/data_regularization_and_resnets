@@ -56,27 +56,37 @@ val_ds = CIFAR10(root="data/",
 
 class_names = train_ds.classes
 
-def show_example(img, label): 
-    plt.figure(figsize=(10, 15)) 
-    plt.imshow(img.permute(1, 2, 0)) 
-    plt.axis(False) 
-    plt.title(f"Label: {class_names[label]}")   
 
-show_example(*train_ds[0])
-show_example(*train_ds[10])
-
-
-
-"""Create data loaders""" 
+"""Next, we create data loaders for retrieving images in batches.""" 
 BATCH_SIZE = 128
 train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
 val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE*2, pin_memory=True) 
 
+"""Let's take a look at some samples images from the training dataloader. To display the images, we'll need to 
+denormalize the pixel values to bring them back into the range (0, 1)""" 
+
+def denormalize(images, means, stds): 
+    means = torch.tensor(means).reshape(1, 3, 1, 1) 
+    stds  = torch.tensor(stds).reshape(1, 3, 1, 1)  
+    return images * stds + means   
+
+def show_example(img: torch.Tensor, label): 
+    denorm_image = denormalize(img, *STATS)
+    plt.figure(figsize=(10, 15)) 
+    plt.imshow(denorm_image.permute(1, 2, 0)) 
+    plt.axis(False) 
+    plt.title(f"Label: {class_names[label]}")   
+
+#show_example(*train_ds[0])
+#show_example(*train_ds[10])
+
+
 """View a batch using make_grid""" 
 def show_batch(batch): 
     images, _ = batch 
+    denorm_images = denormalize(images, *STATS)
     plt.figure(figsize=(10, 15))
-    plt.imshow(make_grid(images, nrow=16).permute(1, 2, 0)) 
+    plt.imshow(make_grid(denorm_images, nrow=16).permute(1, 2, 0).clamp(0, 1)) 
     plt.axis(False) 
     plt.title("Sample Batch") 
 
@@ -84,6 +94,9 @@ for batch in train_dl:
     show_batch(batch)  
     break 
 
+plt.show() 
+import sys 
+sys.exit()
 """Create Device Agnostic code""" 
 def get_default_device(): 
     """Get GPU if available, else CPU"""
@@ -262,7 +275,5 @@ def show_prediction(image: torch.Tensor, label, model:nn.Module):
 show_prediction(*val_ds[0] , model) 
 show_prediction(*val_ds[108] , model)  
 show_prediction(*val_ds[3900] , model) 
-
-plt.show()
 
 
