@@ -3,43 +3,74 @@ import torch.nn as nn
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split 
 
-from torchvision.transforms import ToTensor
+import torchvision.transforms as tf
 from torchvision.utils import make_grid 
 from torchvision.datasets import CIFAR10
 
 import matplotlib.pyplot as plt 
 import numpy as np  
 
-datasets = CIFAR10(root="data/", 
+"""In addition to ToTensor transform, we'll also apply some other transforms to the images.
+There are a few important changes we'll make while creating PyTorch datasets for training and validation: 
+
+1. Use test set for validation: Instead of setting aside a fraction (e.g. 10%) of 
+the data for validation, we'll simply use the test set as our validation set. This gives us 
+s little more data to train with. In general, once you picked the best model architecture & hyperparameters using 
+a fixed validation set, it is a good idea to retrain the same model on the entire datset just 
+to give it a small final boost in performance. 
+
+2. Channel-wise data normalization: We will normalize the image tensors by sibtracting 
+the mean and dividing by the standard deviation across each channel. As a result, the mean of the data across 
+each channel is 10, and the standard deviation is 1. Normalizing the data prevents the values from any one 
+channel from disproportionately affecting the loss and gradients while training, simply by having a 
+higher or wider range of values than others. 
+
+3. Randomized data augmentation: We will apply randomly chosen transformations while loading images 
+from the training dataset. Specifically, we will pad each image by 4 pixels , and then take a random crop of 
+size 32 x 32 pixels, then flip the image horizontally with 50% probability. Since the transformation will be applied randomly and 
+dynamicaly each time a particular image is loaded, the model sees slightly different images in each epoch of training, which 
+allows it to generalize.""" 
+
+# Data transforms (normalization & augmentation)
+STATS = ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)) 
+train_tfms = tf.Compose([tf.RandomCrop(32, padding=4, padding_mode="reflect"), 
+                         tf.RandomHorizontalFlip(), 
+                         #tf.RandomRotation(), 
+                         #tf.RandomResizedCrop(256, scale=(0.5, 0.9), ratio=(1, 1)), 
+                         #tf.ColorJitter(brightness=0.1, contrast=0.1, saturation=0.1), 
+                         tf.ToTensor(), 
+                         tf.Normalize(*STATS, inplace=True)
+                         ]) 
+
+val_tfms = tf.Compose([tf.ToTensor(), 
+                       tf.Normalize(*STATS)
+                       ]) 
+
+train_ds = CIFAR10(root="data/", 
                    download=True, 
-                   transform=ToTensor())
-test_ds = CIFAR10(root="data/", 
+                   transform=train_tfms)
+val_ds = CIFAR10(root="data/", 
                   download=True,
                   train=False, 
-                  transform=ToTensor())
+                  transform=val_tfms)
 
-class_names = datasets.classes
+class_names = train_ds.classes
 
-def show_image(img, label): 
+def show_example(img, label): 
     plt.figure(figsize=(10, 15)) 
     plt.imshow(img.permute(1, 2, 0)) 
     plt.axis(False) 
     plt.title(f"Label: {class_names[label]}")   
 
-show_image(*datasets[0])
-show_image(*datasets[10])
+show_example(*train_ds[0])
+show_example(*train_ds[10])
 
-"""Create training and validation sets""" 
-VAL_SIZE = 5_000 
-TRAIN_SIZE = len(datasets) - VAL_SIZE 
 
-train_ds, val_ds = random_split(datasets, [TRAIN_SIZE, VAL_SIZE])   
 
 """Create data loaders""" 
 BATCH_SIZE = 128
 train_dl = DataLoader(train_ds, batch_size=BATCH_SIZE, shuffle=True, pin_memory=True)
 val_dl = DataLoader(val_ds, batch_size=BATCH_SIZE*2, pin_memory=True) 
-test_dl = DataLoader(test_ds, batch_size= BATCH_SIZE*2, pin_memory=True) 
 
 """View a batch using make_grid""" 
 def show_batch(batch): 
@@ -85,7 +116,7 @@ class DeviceDataLoader():
 """Now, let's wrap our data loaders""" 
 train_dl = DeviceDataLoader(train_dl, device)
 val_dl = DeviceDataLoader(val_dl, device)
-test_dl = DeviceDataLoader(test_dl, device) 
+
 
 """Define an accuracy function to compute the model's accruacy""" 
 def accuracy(outputs, y_true): 
@@ -117,7 +148,7 @@ class ImageClassificationBase(nn.Module):
         return {"val_loss": epoch_loss, "val_acc": epoch_acc} 
     
     def epoch_end(self, epoch, result): 
-        print(f"\33[32m Epoch: {epoch+1} | train_loss: {result["train_loss"]:.4f} | val_loss: {result["val_loss"]:.4f} | val_acc: {result["val_acc"]:.4f}") 
+        print(f"\33[33m Epoch: {epoch+1} | train_loss: {result["train_loss"]:.4f} | val_loss: {result["val_loss"]:.4f} | val_acc: {result["val_acc"]:.4f}") 
     
 class Cfar10CnnModel(ImageClassificationBase): 
     def __init__(self):
@@ -188,9 +219,50 @@ to_device(model, device)
 
 """Train model""" 
 opt_func = torch.optim.Adam 
-lr = 0.005
-fit(10, lr, model, train_dl, val_dl, opt_func) 
+lr = 0.001
+
+history = fit(10, lr, model, train_dl, val_dl, opt_func) 
+
+"""Plot losses and accuracies""" 
+
+def plot_losses_and_accs(history):
+    train_losses = [x["train_loss"] for x in history] 
+    val_losses = [x["val_loss"] for x in history]  
+    val_accs = [x["val_acc"] for x in history]
+
+    plt.figure(figsize=(10, 15))  
+    plt.plot(val_accs, "-x") 
+    plt.xlabel("Epoch") 
+    plt.ylabel("Accuracy") 
+    plt.title("Accuracy Vs No. epochs")  
+
+    plt.figure(figsize=(10, 15))  
+    plt.plot(train_losses, "-bx") 
+    plt.plot(val_losses, "-rx") 
+    plt.xlabel("Epoch") 
+    plt.ylabel("Loss") 
+    plt.title("Loss Vs No. epochs")  
 
 
+plot_losses_and_accs(history)
+
+"""Predict and view image"""
+def predict_image(image:torch.Tensor, model:nn.Module): 
+    image = to_device(image, device)
+    outputs = model(image.unsqueeze(0))  
+    preds = torch.argmax(outputs, dim=1)
+    return preds[0].item()
+
+def show_prediction(image: torch.Tensor, label, model:nn.Module): 
+    plt.figure(figsize=(10, 10))
+    plt.imshow(image.permute(1, 2, 0)) 
+    plt.title(f"Label: {class_names[label]} | Prediction: {class_names[predict_image(image, model)]}")
+    plt.axis(False)
+
+show_prediction(*val_ds[0] , model) 
+show_prediction(*val_ds[108] , model)  
+show_prediction(*val_ds[3900] , model) 
+
+plt.show()
 
 
